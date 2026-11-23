@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 mod node;
+mod setup;
+pub use setup::{VoiceSetupComponent, VoiceSetupEvent, VoiceSetupPhase, VoiceSetupSession};
 #[cfg(test)]
 mod tests;
 mod tree;
@@ -78,6 +80,7 @@ pub struct VoiceAdapter {
     package: PathBuf,
     home: PathBuf,
     mode: &'static str,
+    setup_anchor: bool,
     env: Vec<(&'static str, OsString)>,
 }
 
@@ -195,6 +198,7 @@ impl VoiceAdapter {
             })
             .collect();
         Some(Self {
+            setup_anchor: install == root,
             root,
             node,
             package,
