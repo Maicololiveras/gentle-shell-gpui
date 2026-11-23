@@ -98,6 +98,143 @@ fn a_pending_capture_cannot_start_before_the_backend_answers_get_state() {
     assert!(pending.can_start(&shutdown));
 }
 
+#[test]
+fn setup_requires_missing_components_support_and_explicit_live_consent() {
+    use super::setup::Stage;
+    let mut voice = Voice::default();
+    assert!(!voice.offer_setup(true));
+    voice.status = Status::Missing;
+    assert!(!voice.offer_setup(false));
+    assert!(voice.offer_setup(true));
+    assert_eq!(voice.setup.stage, Stage::Offer);
+    assert_eq!(voice.begin_setup(true), None);
+    voice.observe_state(voice.state_epoch(), true);
+    assert_eq!(voice.begin_setup(false), None);
+    let attempt = voice.begin_setup(true).unwrap();
+    assert!(voice.setup.can_launch(attempt));
+    assert_eq!(voice.begin_setup(true), None);
+    assert_eq!(voice.status, Status::Missing);
+}
+
+#[test]
+fn setup_cancellation_and_reset_reject_late_success_without_starting_capture() {
+    use super::setup::Stage;
+    use pi_rpc::voice::{VoiceSetupComponent, VoiceSetupEvent, VoiceSetupPhase};
+    let mut voice = Voice::default();
+    voice.observe_state(voice.state_epoch(), true);
+    voice.status = Status::Missing;
+    assert!(voice.offer_setup(true));
+    let old = voice.begin_setup(true).unwrap();
+    let progress = || VoiceSetupEvent::Progress {
+        component: VoiceSetupComponent::Model,
+        phase: VoiceSetupPhase::Download,
+        received: 42,
+        total: 100,
+    };
+    assert!(voice.setup.apply(old, progress()));
+    assert_eq!(
+        voice.setup.stage,
+        Stage::Progress(
+            VoiceSetupComponent::Model,
+            VoiceSetupPhase::Download,
+            42,
+            100
+        ),
+    );
+    voice.setup.cancel();
+    assert!(!voice.setup.can_launch(old));
+    assert!(!voice.setup.apply(old, progress()));
+    assert!(voice.apply_setup(old, VoiceSetupEvent::Ready));
+    assert_eq!(voice.setup.stage, Stage::Cancelled);
+    assert_eq!(voice.status, Status::Missing);
+    voice.reset_state();
+    assert!(!voice.setup.apply(old, VoiceSetupEvent::Ready));
+    voice.observe_state(voice.state_epoch(), true);
+    voice.status = Status::Missing;
+    assert!(voice.offer_setup(true));
+    let current = voice.begin_setup(true).unwrap();
+    assert_ne!(old, current);
+    assert!(!voice.apply_setup(old, VoiceSetupEvent::Ready));
+    assert_eq!(voice.status, Status::Missing);
+    assert!(voice.apply_setup(current, VoiceSetupEvent::Ready));
+    assert_eq!(voice.setup.stage, Stage::Ready);
+    assert_eq!(voice.status, Status::Idle);
+    voice.setup.reset();
+    assert_eq!(voice.status.message(), "Start dictation");
+}
+
+#[test]
+fn setup_reports_backend_drift_as_a_restart_without_clearing_missing_status() {
+    use super::setup::Stage;
+    use pi_rpc::voice::VoiceSetupEvent;
+    let mut voice = Voice::default();
+    voice.observe_state(voice.state_epoch(), true);
+    voice.status = Status::Missing;
+    assert!(voice.offer_setup(true));
+    let attempt = voice.begin_setup(true).unwrap();
+    assert!(voice.apply_setup(
+        attempt,
+        VoiceSetupEvent::Error {
+            code: "backend-changed".into()
+        },
+    ));
+    assert_eq!(
+        voice.setup.stage,
+        Stage::Failed("The Gentle Shell installation changed. Restart this tab and try again."),
+    );
+    assert_eq!(voice.status, Status::Missing);
+}
+
+#[gpui::test]
+fn setup_keeps_dialog_focus_in_its_tab_and_restores_the_pending_prompt(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::features::session::{SessionView, view_tests::tab};
+    use gpui_kit::AppContext as _;
+    use pi_rpc::{Incoming, UiMethod, UiRequest};
+
+    let (origin, cx) = tab(cx);
+    let prompt = || {
+        Incoming::Ui(UiRequest {
+            id: "confirm-setup-focus".into(),
+            timeout: None,
+            method: UiMethod::Confirm {
+                title: "Confirm".into(),
+                message: "Continue?".into(),
+            },
+        })
+    };
+    cx.update(|window, cx| {
+        origin.update(cx, |view, cx| {
+            view.focus_composer(window, cx);
+            view.voice.status = Status::Missing;
+            assert!(view.voice.offer_setup(true));
+            view.focus_voice_setup(true, window, cx);
+            let dismiss = view.voice.setup.focus.as_ref().unwrap().dismiss.clone();
+            view.handle_batch(vec![prompt()], window, cx);
+            assert!(dismiss.is_focused(window));
+            view.dismiss_voice_setup(window, cx);
+            assert!(view.focus_handle.is_focused(window));
+            view.answer_dialog(pi_rpc::UiAnswer::Cancelled, window, cx);
+        });
+        let other = cx.new(|cx| SessionView::new(std::env::temp_dir(), None, window, cx, false));
+        other
+            .read(cx)
+            .composer()
+            .update(cx, |state, cx| state.focus(window, cx));
+        let other_focus = window.focused(cx);
+        origin.update(cx, |view, cx| {
+            assert!(view.voice.offer_setup(true));
+            view.focus_voice_setup(false, window, cx);
+            view.handle_batch(vec![prompt()], window, cx);
+            view.sync_voice_setup_focus(window, cx);
+            assert_eq!(window.focused(cx), other_focus);
+            view.dismiss_voice_setup(window, cx);
+            assert_eq!(window.focused(cx), other_focus);
+        });
+    });
+}
+
 fn result(text: &str) -> VoiceEvent {
     VoiceEvent::Result {
         text: text.into(),

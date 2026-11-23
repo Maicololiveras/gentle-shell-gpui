@@ -580,7 +580,10 @@ impl SessionView {
     /// agent by accident.
     fn abort(&mut self, _: &Abort, window: &mut Window, cx: &mut Context<Self>) {
         let now = std::time::Instant::now();
-        let closed = if self.agents_panel.open {
+        let closed = if self.voice.setup.open() {
+            self.dismiss_voice_setup(window, cx);
+            true
+        } else if self.agents_panel.open {
             self.close_agents(cx);
             true
         } else if !self.extension.dialogs.is_empty() {

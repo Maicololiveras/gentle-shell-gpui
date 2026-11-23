@@ -568,7 +568,10 @@ impl SessionView {
             })
             .tooltip(mic_label)
             .accessibility_label(mic_label)
-            .disabled((!ready || voice.active()) && voice != Status::Recording)
+            .disabled(
+                self.voice.setup.open()
+                    || ((!ready || voice.active()) && voice != Status::Recording),
+            )
             .on_click(cx.listener(|this, _, window, cx| this.toggle_dictation(window, cx)));
         // Keep dictation beside the existing send/stop action in every style.
         // The pulse still measures and surrounds only the send/stop action.

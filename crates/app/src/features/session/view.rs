@@ -39,6 +39,7 @@ mod review;
 mod slash_menu;
 mod todo_island;
 mod transcript_list;
+mod voice_setup;
 
 pub(super) use activity::parse_rate_limit;
 pub(super) use cards::markdown_custom;
@@ -1925,6 +1926,7 @@ impl SessionView {
 impl Render for SessionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::shared::diagnostics::render("SessionView");
+        self.sync_voice_setup_focus(window, cx);
         // Its indicators on the live layer are placed again as it draws.
         self.live_slots.clear(cx.entity_id());
         // A tab starts its backend once shown.
@@ -2076,12 +2078,19 @@ impl Render for SessionView {
             .on_action(cx.listener(Self::on_stop))
             .on_action(cx.listener(Self::toggle_agents))
             .on_action(cx.listener(Self::on_new_session))
-            .capture_key_down(cx.listener(Self::on_dialog_key))
+            .capture_key_down(cx.listener(|this, event, window, cx| {
+                if this.voice.setup.open() {
+                    this.on_voice_setup_key(event, window, cx);
+                } else {
+                    this.on_dialog_key(event, window, cx);
+                }
+            }))
             .relative()
             .size_full()
             .child(main)
             .children(self.render_agents_panel(cx))
             .children(self.genui.render_pinned(cx))
+            .children(self.render_voice_setup(window, cx))
     }
 }
 
