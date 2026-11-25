@@ -544,19 +544,19 @@ impl SessionView {
             Some(UiMethod::Input { placeholder, .. }) => (None, placeholder.clone()),
             Some(UiMethod::Editor { prefill, .. }) => (prefill.clone(), None),
             Some(_) => {
-                window.focus(&self.focus_handle, cx);
+                self.focus_extension_prompt(self.focus_handle.clone(), window, cx);
                 return;
             }
             None => {
-                self.focus_composer(window, cx);
+                self.focus_extension_prompt(self.composer.focus_handle(cx), window, cx);
                 return;
             }
         };
         self.dialog_input.update(cx, |state, cx| {
             state.set_value(text.unwrap_or_default(), window, cx);
             state.set_placeholder(placeholder.unwrap_or_default(), window, cx);
-            state.focus(window, cx);
         });
+        self.focus_extension_prompt(self.dialog_input.focus_handle(cx), window, cx);
     }
 
     /// Answer the front dialog and show the next one.

@@ -9,6 +9,7 @@ use pi_rpc::voice::{VoiceAdapter, VoiceEvent, VoiceSession};
 
 use super::SessionView;
 
+pub(super) mod setup;
 #[cfg(test)]
 mod tests;
 
@@ -94,6 +95,7 @@ pub(super) struct Voice {
     session: Option<VoiceSession>,
     state_epoch: u64,
     state_ready: bool,
+    pub(super) setup: setup::Setup,
 }
 
 impl Voice {
@@ -110,6 +112,7 @@ impl Voice {
     pub(super) fn reset_state(&mut self) {
         self.state_epoch = self.state_epoch.wrapping_add(1);
         self.state_ready = false;
+        self.setup.reset();
         self.invalidate();
     }
 
@@ -182,12 +185,16 @@ impl SessionView {
     /// shares the signal, including captures whose originating tab has closed.
     pub(crate) fn shutdown_dictation(cx: &mut App) -> bool {
         cx.default_global::<Shutdown>().begin();
-        MIC_IN_USE.load(Relaxed)
+        MIC_IN_USE.load(Relaxed) || setup::SETUP_IN_USE.load(Relaxed)
     }
 
     pub(super) fn toggle_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shutdown = cx.default_global::<Shutdown>().clone();
-        if shutdown.quitting() || !self.voice.state_ready || !self.backend.is_ready() {
+        if shutdown.quitting()
+            || !self.voice.state_ready
+            || !self.backend.is_ready()
+            || self.voice.setup.open()
+        {
             return;
         }
         if self.voice.status == Status::Recording {
@@ -212,6 +219,7 @@ impl SessionView {
             return;
         };
         self.voice.status = Status::Starting;
+        let origin_focus = window.focused(cx);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let signal = shutdown.0.clone();
@@ -277,7 +285,23 @@ impl SessionView {
             // An inactive tab may not be in the current render tree. Use
             // the captured window and weak entity, not the visible tab.
             let _ = cx.update(|window, cx| {
-                let _ = this.update(cx, |this, cx| this.finish_dictation(terminal, window, cx));
+                let _ = this.update(cx, |this, cx| {
+                    let missing = this.voice.status == Status::Starting
+                        && matches!(&terminal, VoiceEvent::Error { code } if code == "not-installed");
+                    this.finish_dictation(terminal, window, cx);
+                    let supported = this.backend.is_ready()
+                        && this.voice.state_ready
+                        && this
+                            .voice
+                            .launch
+                            .as_ref()
+                            .is_some_and(|(_, adapter)| adapter.setup_supported());
+                    if missing && this.voice.offer_setup(supported) {
+                        let focus_now = this.owns_voice_setup_window_focus(window, cx)
+                            || (origin_focus.is_none() && window.focused(cx).is_none());
+                        this.focus_voice_setup(focus_now, window, cx);
+                    }
+                });
             });
         })
         .detach();

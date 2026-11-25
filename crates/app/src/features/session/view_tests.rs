@@ -30,7 +30,7 @@ fn response(request_id: &str, data: Value) -> UiRequest {
 
 /// A tab in a headless window that never starts a backend (drawing a tab
 /// starts one otherwise).
-fn tab(cx: &mut TestAppContext) -> (Entity<SessionView>, &mut VisualTestContext) {
+pub(super) fn tab(cx: &mut TestAppContext) -> (Entity<SessionView>, &mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         cx.set_reduce_motion(true);
