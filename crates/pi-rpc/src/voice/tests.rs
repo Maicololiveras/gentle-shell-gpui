@@ -80,6 +80,7 @@ fn pinned_bundle_probes_without_opening_audio() {
         home: root,
         node,
         mode: "bundled",
+        setup_anchor: true,
         env,
     };
     assert_eq!(
@@ -113,6 +114,57 @@ fn scratch() -> Scratch {
     Scratch(dunce::canonicalize(root).unwrap())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_publication_never_replaces_an_existing_empty_component() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let scratch = scratch();
+    let home = &scratch.0;
+    fs::set_permissions(home, fs::Permissions::from_mode(0o700)).unwrap();
+    let workspace = ".desktop-setup-A1B2C3";
+    let source = home.join(workspace).join("runtime/pinned");
+    let destination = home.join("runtime/pinned");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join(".gentle-voice.json"), "verified").unwrap();
+    fs::create_dir_all(&destination).unwrap();
+
+    let publish = |workspace, id, current| {
+        setup::publish(home, workspace, VoiceSetupComponent::Runtime, id, || {
+            current
+        })
+    };
+    let publish_pinned = || publish(workspace, "pinned", true);
+    assert_eq!(publish_pinned().unwrap(), b"publish-conflict\n");
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+    assert_eq!(
+        fs::read_to_string(source.join(".gentle-voice.json")).unwrap(),
+        "verified"
+    );
+    assert!(publish(workspace, "../pinned", true).is_err());
+    assert!(publish("../outside", "pinned", true).is_err());
+
+    fs::remove_dir(&destination).unwrap();
+    let parent = destination.parent().unwrap();
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(publish_pinned().unwrap(), b"unsafe-path\n");
+    assert!(source.is_dir());
+    assert!(!destination.exists());
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        publish(workspace, "pinned", false).unwrap(),
+        b"backend-changed\n"
+    );
+    assert!(source.is_dir());
+    assert!(!destination.exists());
+    assert_eq!(publish_pinned().unwrap(), b"published\n");
+    assert_eq!(
+        fs::read_to_string(home.join("runtime/pinned/.gentle-voice.json")).unwrap(),
+        "verified"
+    );
+    assert!(!source.exists());
+}
+
 #[test]
 fn replaced_node_is_rejected_before_spawn() {
     use std::fs;
@@ -127,6 +179,7 @@ fn replaced_node_is_rejected_before_spawn() {
         home: scratch.0.clone(),
         node: node.clone(),
         mode: "bundled",
+        setup_anchor: true,
         env: vec![],
     };
     let replacement = scratch.0.join("replacement");
@@ -203,6 +256,19 @@ fn voice_pairing_rejects_a_retargeted_bundle() {
 
     select("b");
     assert!(!pinned.matches_launch(&spec));
+    #[cfg(target_os = "linux")]
+    {
+        let (_session, events) = pinned
+            .start_setup_until_shutdown(&spec, Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(
+            events.recv_blocking().unwrap(),
+            VoiceSetupEvent::Error {
+                code: "backend-changed".into()
+            }
+        );
+        assert!(!prefix.join("config").exists());
+    }
     let restarted = launch();
     let next = VoiceAdapter::from_launch(&restarted).unwrap();
     assert_eq!(next.package, replacement);

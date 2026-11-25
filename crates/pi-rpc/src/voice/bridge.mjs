@@ -38,7 +38,7 @@ export function supportsManifest(manifest, mode) {
     (mode === 'bundled' && manifest.version === '5.0.0'));
 }
 
-async function load(root, mode) {
+async function load(root, mode, setup) {
   if (!isAbsolute(root) || root !== realpathSync(root)) throw new Error();
   const manifest = JSON.parse(boundedFile(join(root, 'package.json'), 64 * 1024).toString('utf8'));
   if (!supportsManifest(manifest, mode)) throw new Error();
@@ -69,7 +69,9 @@ async function load(root, mode) {
   });
   try {
     const get = file => import(pathToFileURL(join(root, 'lib', file)).href);
-    return [worker, ...await Promise.all(['voice-session.ts', 'voice-platform.ts', 'voice-install.ts', 'gentle-shell-bundled.ts'].map(get))];
+    const entries = ['voice-session.ts', 'voice-platform.ts', 'voice-install.ts', 'gentle-shell-bundled.ts'];
+    if (setup) entries.push('voice-artifacts.ts');
+    return [worker, ...await Promise.all(entries.map(get))];
   } finally {
     hook.deregister();
   }
@@ -78,18 +80,24 @@ async function load(root, mode) {
 const emit = (type, fields) => process.stdout.write(JSON.stringify({ type, ...fields }) + '\n');
 const codes = new Set(('unsupported node-version not-installed invalid-request runtime-invalid model-invalid runtime-load model-load no-input-device unsupported-input capture empty-audio no-speech decode internal timeout protocol worker-exited cancelled').split(' '));
 
-export async function main(root, mode, home) {
+async function voiceContext(root, mode, home, setup = false) {
   let api;
-  try { api = await load(root, mode); } catch { return emit('error', { code: 'unsupported' }); }
-  const [worker, session, platform, install, bundled] = api;
+  try { api = await load(root, mode, setup); } catch { return; }
+  const [, , platform, install, bundled] = api;
   const diagnosis = platform.diagnoseVoicePlatform(platform.readVoicePlatformProbe());
-  if (diagnosis.support !== 'known' || !isAbsolute(home)) return emit('error', { code: 'unsupported' });
+  if (diagnosis.support !== 'known' || !isAbsolute(home)) return;
   const { target } = diagnosis;
   const env = mode === 'bundled' && bundled.runningBundledPrefix({ GENTLE_SHELL_PREFIX: home })
     ? { GENTLE_SHELL_PREFIX: home }
     : mode === 'managed' ? { GENTLE_PI_CONFIG_HOME: home } : undefined;
-  if (!env) return emit('error', { code: 'unsupported' });
-  const voiceHome = install.resolveVoiceHome(env);
+  if (!env) return;
+  return { api, target, voiceHome: install.resolveVoiceHome(env) };
+}
+
+export async function main(root, mode, home) {
+  const context = await voiceContext(root, mode, home);
+  if (!context) return emit('error', { code: 'unsupported' });
+  const { api: [worker, session, , install], target, voiceHome } = context;
   await serve(onStateChange => session.createVoiceSession({
     target, voiceHome, onStateChange,
     spawn: (_executable, _args, options) => spawnVerifiedWorker(worker, options),
