@@ -15,6 +15,7 @@ pub mod docs;
 pub mod double_interrupt;
 pub mod engram;
 pub mod explorer;
+pub mod folders;
 pub mod fonts;
 pub mod fuzzy;
 pub mod gentle_state;
